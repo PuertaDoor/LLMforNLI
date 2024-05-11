@@ -26,7 +26,7 @@ def get_tokenizer(model_name):
         tokenizer.pad_token_id = tokenizer.eos_token_id
         return tokenizer
     elif model_name == "mt5":
-        return AutoTokenizer.from_pretrained("google/mt5-xl")
+        return AutoTokenizer.from_pretrained("google/mt5-xxl")
     else:
         raise ValueError("Unsupported model name")
 
@@ -40,7 +40,7 @@ def get_model(model_name, num_labels, quantization_config):
         )
     elif model_name == "mt5":
         model = AutoModelForSequenceClassification.from_pretrained(
-            "google/mt5-xl", 
+            "google/mt5-xxl", 
             num_labels=num_labels, 
             quantization_config=quantization_config,
             device_map={'':torch.cuda.current_device()}
