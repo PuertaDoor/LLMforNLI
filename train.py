@@ -12,12 +12,7 @@ from tqdm.auto import tqdm
 import gc
 
 # Liste des langues européennes supportées par HelsinkiNLP
-european_langs = [
-    'fr', 'es', 'it', 'de', 'nl', 'ro', 'el', 'bg', 'cs', 'da', 
-    'et', 'fi', 'hu', 'mt', 'sk', 'sv', 
-    'sq', 'hy', 'az', 'eu', 'ca', 'is', 'ga', 
-    'mk', 'uk'
-]
+european_langs = ['fr', 'es', 'de', 'it', 'nl', 'ro', 'el', 'bg']
 
 def get_tokenizer(model_name):
     if model_name == "llama":
@@ -38,12 +33,13 @@ def get_model(model_name, num_labels, quantization_config):
             quantization_config=quantization_config,
             device_map={'':torch.cuda.current_device()}
         )
+        model.config.pad_token_id = model.config.eos_token_id
     elif model_name == "mt5":
         model = AutoModelForSequenceClassification.from_pretrained(
-            "google/mt5-xxl", 
+            "google/mt5-xl", 
             num_labels=num_labels, 
             quantization_config=quantization_config,
-            device_map={'':torch.cuda.current_device()}
+            device_map="auto"
         )
     else:
         raise ValueError("Unsupported model name")
@@ -129,12 +125,13 @@ def load_and_prepare_data():
     class_indices = {label: [] for label in set(dataset['labels'])}
     for index, label in enumerate(dataset['labels']):
         class_indices[label].append(index)
-    sampled_indices = [index for label, indices in class_indices.items() for index in random.sample(indices, 8)]
+    sampled_indices = [random.sample(indices, 1) for indices in class_indices.values() for _ in range(8)]
+    sampled_indices = [index for sublist in sampled_indices for index in sublist]
     train_data = dataset.select(sampled_indices)
     
     # Chargement du dataset pour l'évaluation
     eval_dataset = load_dataset("Gameselo/monolingual-wideNLI", split="dev")
-    eval_dataset = eval_dataset.shuffle(seed=42).select(range(8)).rename_column("label", "labels")  # Sélectionner 8 données aléatoires
+    eval_dataset = eval_dataset.shuffle(seed=42).select(range(10)).rename_column("label", "labels")  # Sélectionner 10 données aléatoires
 
     train_data = translate_dataset(train_data, ['premise', 'hypothesis'], european_langs)
     eval_dataset = translate_dataset(eval_dataset, ['premise', 'hypothesis'], european_langs)
@@ -143,28 +140,21 @@ def load_and_prepare_data():
 
 def tokenize_and_prepare_data(examples, model_name, tokenizer):
     if model_name == "mt5":
-        # Utiliser un format de prompt spécifique pour mT5
         task_description = "Determine if the hypothesis is true based on the premise."
-        texts = [f"Task: {task_description} Premise: {premise} Hypothesis: {hypothesis} </s>"
-                 for premise, hypothesis in zip(examples['premise'], examples['hypothesis'])]
+        inputs = [f"Task: {task_description} Premise: {premise} Hypothesis: {hypothesis}" for premise, hypothesis in zip(examples['premise'], examples['hypothesis'])]
+        # Tokeniser les inputs en batch
+        result = tokenizer(inputs, max_length=1000, truncation=True, padding="max_length", return_tensors='pt')
+        return result
     else:
-        # Format général utilisé pour d'autres modèles comme LLaMa
-        texts = [f"Is this true? {premise} implies {hypothesis}"
-                 for premise, hypothesis in zip(examples['premise'], examples['hypothesis'])]
-
-    result = tokenizer(texts,
-                       padding='max_length',
-                       truncation=True,
-                       max_length=1000,
-                       return_overflowing_tokens=True)
-
-    if 'labels' in examples:
-        result['labels'] = examples['labels']
-
-    sample_map = result.pop("overflow_to_sample_mapping")
-    for key, values in examples.items():
-        result[key] = [values[i] for i in sample_map]
-    return result
+        # Tokeniser chaque texte dans le batch
+        text = f"Is this true? {examples['premise']} implies {examples['hypothesis']}"
+        result = tokenizer(text,truncation=True,   
+                           max_length=1000,
+                           return_overflowing_tokens=True)
+        sample_map = result.pop("overflow_to_sample_mapping")
+        for key, values in examples.items():
+            result[key] = [values[i] for i in sample_map]
+        return result
 
 def model_setup(trial, model_name):
 
@@ -178,8 +168,6 @@ def model_setup(trial, model_name):
     model = get_model(model_name, num_labels=3, quantization_config=quantization_config)
 
     tokenizer = get_tokenizer(model_name)
-
-    model.config.pad_token_id = model.config.eos_token_id
 
     # Additional PEFT configuration
     lora_config = LoraConfig(
@@ -239,6 +227,9 @@ def objective(trial, model_name):
         formatting_func=tokenize_and_prepare_data,
         callbacks=[OptunaPruningCallback(trial)]
     )
+
+    torch.cuda.empty_cache()
+    gc.collect()
 
     trainer.train()
     eval_result = trainer.evaluate()
@@ -310,7 +301,10 @@ def train_with_best_params(best_params, model_name):
     )
     
     trainer.train()
-    trainer.save_model("./best_model")  # Sauvegarder le modèle
+    if model_name == 'mt5':
+        trainer.save_model("./best_model_mt5")  # Sauvegarder le modèle
+    else:
+        trainer.save_model("./best_model_llama")
 
 def main():
     parser = argparse.ArgumentParser(description="Train a NLI fact-checker model")
