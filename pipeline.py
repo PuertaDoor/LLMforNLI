@@ -94,8 +94,11 @@ def infer_user_input(user_input, evidence_texts):
     max_score_idx = torch.argmax(cos_scores).item()
     best_evidence = evidence_texts[max_score_idx]
     
+    # Translate the best evidence to English
+    translated_evidence = translate_to_english(best_evidence)
+
     # Perform NLI
-    result = perform_nli(best_evidence, translated_input)
+    result = perform_nli(translated_input, translated_evidence)
     return result, best_evidence
 
 # Example usage
